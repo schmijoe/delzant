@@ -88,10 +88,11 @@ function Polygon(edges::Edge...)
     deleteat!(intersections, tobedeleted)
   end
 
-  # Test if they are in clockwise order, and reverse the order
+  # Test if they are in clockwise order, and reverse the order otherwise
   if ev(edges[1],vertices[3]) < 0
+    show("ooohhh you found a configuration that produces this! Can you please check if everything works here?")
     reverse!(vertices)
-    push!(edges, popfirst!(edge)) |> reverse!
+    push!(edges, popfirst!(edges)) |> reverse!
   end
 
   Polygon(edges, vertices)
@@ -187,5 +188,8 @@ function get_probe_ranges(Δ::Polygon, edge_index::Integer)
   ranges
 end
 
-CP2 = Polygon([-1,-1], [1,-1], [-1,1])
+CP2 = Polygon([-1,-1],[2,-1],[-1,2])
+CP2_1 = Polygon([-1,0],[0,-1],[2,-1],[-1,2])
+CP2_2 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[-1,2])
+CP2_3 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[0,1],[-1,1])
 Δ1 = Polygon([0,0],[26,0],[26,1],[22,9],[21,10],[20,10])
