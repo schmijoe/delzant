@@ -20,14 +20,16 @@ end
 Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
+#Base.:(<)(e1::Edge,e2::Edge) = (det([e1.λ e2.λ]) < 0) # counter-clockwise ordering at intersection
 
 function ev(e::Edge, p::Vector{<:Real})
   return p'*e.λ + e.c
 end
 
 
-function intersect(e1::Edge, e2::Edge)
-  e1.λ==e2.λ || e1.λ==-e2.λ ? nothing : -[e1.λ'//1; e2.λ'//1]^-1*[e1.c; e2.c]
+function intersect(e1::Edge, e2::Edge) # Intersection with sign
+  A = [e1.λ'//1; e2.λ'//1]; detA = det(A);
+  (detA == 0 ? nothing : -A^-1*[e1.c; e2.c], sign(detA))
 end
 e1::Edge ∩ e2::Edge = intersect(e1,e2)
 
@@ -42,10 +44,12 @@ function Polygon(edges::Edge...)
   # Collect all intersections
   for (n,e1) in enumerate(edges) # iterate over all unordered pairs
     for e2 in Iterators.drop(edges,n)
-      i = e1 ∩ e2
+      i,orientation = e1 ∩ e2
       if !isnothing(i)
-        # intersections are labled by their edges
-        push!(intersections, (i, Set((e1,e2))))
+        # intersections are labelled by their edges, in counter-clockwise order
+        push!(intersections,
+              (i, orientation==1 ? [e1,e2] : [e2,e1])
+             )
       end
     end
   end
@@ -63,57 +67,28 @@ function Polygon(edges::Edge...)
   end
 
   if isempty(intersections)
+    @warn "Polygon was empty!" edges
     return nothing
   end
 
-  # Walk through intersections to get them sorted:
-  current_intersection = pop!(intersections)
-  vertices = [current_intersection[1]]
-  e = first(current_intersection[2])
-  edges = [e]
-  while !isempty(intersections)
-    tobedeleted = []
-    for (i,intersection) in enumerate(intersections)
-      if e in intersection[2]
-        current_intersection=intersection
-        push!(vertices,current_intersection[1])
-        e = only(setdiff(current_intersection[2], Set((e,))))
-        push!(edges, e)
-        push!(tobedeleted, i)
-      end
-    end
-    if isempty(tobedeleted)
-      error("Something went wrong.")
-    end
-    deleteat!(intersections, tobedeleted)
-  end
-
-  # Test if they are in clockwise order, and reverse the order otherwise
-  if ev(edges[1],vertices[3]) < 0
-    show("ooohhh you found a configuration that produces this! Can you please check if everything works here?")
-    reverse!(vertices)
-    push!(edges, popfirst!(edges)) |> reverse!
-  end
-
+  # Order intersections by outgoing edge orientation
+  sort!(intersections, by=i->(-atan(i[2][2].λ...)))
+  vertices=first.(intersections)
+  edges=[int[2][2] for int in intersections]
   Polygon(edges, vertices)
 end
-function Polygon(vertices::Vector{<:Real}...)
+function Polygon(vertices::Vector{<:Real}...; ensure_convex=false)
   vertices = [rationalize.(v) for v in vertices]
   edges = Edge[]
-  for i in 1:length(vertices)
+  for i in eachindex(vertices)
     push!(edges, Edge(vertices[i], vertices[i%end+1]))
   end
-  Polygon(edges, vertices)
+  ensure_convex ? Polygon(edges...) : Polygon(edges, vertices)
 end
 
-function Base.:*(M::Matrix{<:Real}, Δ::Polygon)
-  vertices = [M * v for v in Δ.vertices]
-  Polygon(vertices...)
-end
-function Base.:+(u::Vector{<:Real}, Δ::Polygon)
-  vertices = [u + v for v in Δ.vertices]
-  Polygon(vertices...)
-end
+Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon([M * v for v in Δ.vertices]...)
+Base.:+(u::Vector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
+
 
 function draw(Δ::Polygon; fill=:red, falpha=0.0, border=:black, balpha=1.0, lw=2.0)
   s = Shape(first.(Δ.vertices), last.(Δ.vertices))
@@ -138,13 +113,11 @@ function draw_probe_ranges(Δ::Polygon; color=:rainbow, alpha=0.15)
           )
     end
   end
-  draw(Δ)
+  draw(Δ, lw=0.8)
 end
 
 
-function get_default_probe(e::Edge)
-  collect(gcdx(e.λ...)[2:3])
-end
+get_default_probe(e::Edge) = collect(gcdx(e.λ...)[2:3])
 
 function get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})
   v = [0 -1; 1 0] * e[2].λ
@@ -172,24 +145,72 @@ function get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integ
   range = Polygon(Edge(λ,-λ'*r), Edge(-λ, λ'*l), Δ.edges...)
   M = [[0 -1;1 0]*e.λ//1 probe//1]
   offset = - e.λ * e.c//sum(t->t^2, e.λ)
-  offset + (M*[1 0; 0 1//2]*M^(-1)) * (-offset + range)
+  offset + (M * [1 0; 0 1//2] * M^(-1)) * (-offset + range)
 end
 
 function get_probe_ranges(Δ::Polygon, edge_index::Integer)
   e = Δ.edges[edge_index]
   ed = [0 -1; 1 0] * e.λ
   dp = get_default_probe(e)
-  I = get_probe_intervall(Δ, edge_index, dp)
   ranges = []
-  for i in I
+  for i in get_probe_intervall(Δ, edge_index, dp)
     probe = dp + i*ed
     push!(ranges, get_probe_range(Δ, edge_index, probe))
   end
   ranges
 end
 
-CP2 = Polygon([-1,-1],[2,-1],[-1,2])
-CP2_1 = Polygon([-1,0],[0,-1],[2,-1],[-1,2])
-CP2_2 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[-1,2])
-CP2_3 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[0,1],[-1,1])
-Δ1 = Polygon([0,0],[26,0],[26,1],[22,9],[21,10],[20,10])
+function get_branch_cut_line(Δ::Polygon, vertex_index::Integer)
+  v = Δ.vertices[vertex_index]
+  e1 = Δ.edges[vertex_index]
+  e2 = vertex_index == 1 ? Δ.edges[end] : Δ.edges[vertex_index - 1]
+  
+  pq = e1.λ - e2.λ; kdist = gcd(pq...); pq = pq .÷ kdist;
+  dist = e1.λ[2]*pq[1] - e1.λ[1]*pq[2]
+  if kdist % dist != 0
+    @error "I don't think this is a potential almost toric corner"
+  end
+  (Edge(pq, pq'*v), kdist ÷ dist)
+end
+
+function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
+  # 1. Insert missing vertices at intersections of branch_cut_line with polygon:
+  intersections = []
+  for (i,e) in enumerate(Δ.edges) # collect intersections
+    int,_ = e ∩ branch_cut_line[1]
+    if !isnothing(int)
+      push!(intersections, (int,i))
+    end
+  end
+  for e in Δ.edges # discard intersections outside
+    filter!(i->(ev(e,i[1]) >= 0),intersections)
+  end
+  sort!(intersections)
+  uint = unique(i->(i[1]), intersections)
+  intersections = filter!(int1->(count(int2->(int2[1] == int1[1]), intersections) == 1),
+                          uint) # select intersections that occur exactly once
+  sort!(intersections, by=i->(i[2]), rev=true) # reverse order by the edge index
+  vertices = copy(Δ.vertices)
+  for (int, edge_index) in intersections
+    insert!(vertices, edge_index+1, int)
+  end
+
+  # 2. Apply mutation
+  p,q = [0 -1;1 0]*branch_cut_line[1].λ; k=branch_cut_line[2]
+  M = [1+k*p*q -k*p^2; k*q^2 1-k*p*q]
+  offset = intersections[1][1]
+  for i in eachindex(vertices)
+    l = ev(branch_cut_line[1], vertices[i])
+    if l*k > 0
+      vertices[i] = offset + M*(vertices[i]-offset)
+    end
+  end
+  Polygon(vertices..., ensure_convex=true)
+end
+mutate(Δ::Polygon, vertex_index::Integer) = mutate(Δ, get_branch_cut_line(Δ, vertex_index))
+
+CP2 = Polygon([-1,-1],[2,-1],[-1,2]);
+CP2_1 = Polygon([-1,0],[0,-1],[2,-1],[-1,2]);
+CP2_2 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[-1,2]);
+CP2_3 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[0,1],[-1,1]);
+Δ1 = Polygon([0,0],[26,0],[26,1],[22,9],[21,10],[20,10]);
