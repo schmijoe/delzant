@@ -170,7 +170,7 @@ function get_branch_cut_line(Δ::Polygon, vertex_index::Integer)
   if kdist % dist != 0
     @error "I don't think this is a potential almost toric corner"
   end
-  (Edge(pq, pq'*v), kdist ÷ dist)
+  (Edge(pq, -pq'*v), kdist ÷ dist)
 end
 
 function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
@@ -185,7 +185,6 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   for e in Δ.edges # discard intersections outside
     filter!(i->(ev(e,i[1]) >= 0),intersections)
   end
-  sort!(intersections)
   uint = unique(i->(i[1]), intersections)
   intersections = filter!(int1->(count(int2->(int2[1] == int1[1]), intersections) == 1),
                           uint) # select intersections that occur exactly once
