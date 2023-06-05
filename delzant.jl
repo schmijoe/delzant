@@ -1,12 +1,12 @@
 using LinearAlgebra
-using Plots
+using GLMakie
 
 Base.rationalize(x::Rational) = x
 Base.rationalize(x::Integer) = x//1
 
 struct Edge
   λ::Vector{<:Integer}
-  c::Rational
+  c::Rational{Int128}
   function Edge(λ::Vector{<:Real}, c::T) where T<:Real
     λ = rationalize.(λ); c = rationalize(c)
     d = gcd(λ...);
@@ -20,7 +20,6 @@ end
 Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
-#Base.:(<)(e1::Edge,e2::Edge) = (det([e1.λ e2.λ]) < 0) # counter-clockwise ordering at intersection
 
 function ev(e::Edge, p::Vector{<:Real})
   return p'*e.λ + e.c
@@ -38,6 +37,9 @@ struct Polygon
   edges::Vector{<:Edge}
   vertices::Vector{Vector{<:Rational}}
 end
+"""
+Construct the polygon bounded by `edges`
+"""
 function Polygon(edges::Edge...)
   edges = unique(edges) # remove duplicate edges
   intersections = []
@@ -77,6 +79,12 @@ function Polygon(edges::Edge...)
   edges=[int[2][2] for int in intersections]
   Polygon(edges, vertices)
 end
+
+"""
+Construct polygon given by `vertices`. They must be in counter-clockwise order.
+
+If `ensure_convex` is true, the resulting edges are passed to `Polygon(edges::Edge...)`
+"""
 function Polygon(vertices::Vector{<:Real}...; ensure_convex=false)
   vertices = [rationalize.(v) for v in vertices]
   edges = Edge[]
@@ -89,34 +97,30 @@ end
 Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon([M * v for v in Δ.vertices]...)
 Base.:+(u::Vector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
 
-
-function draw(Δ::Polygon; fill=:red, falpha=0.0, border=:black, balpha=1.0, lw=2.0)
-  s = Shape(first.(Δ.vertices), last.(Δ.vertices))
-  plot!(s,
-        aspect_ratio=:equal,
-        legend=false,
-        fillcolor=plot_color(fill,falpha),
-        linecolor=plot_color(border,balpha),
-        linewidth=lw,
-       )
-end
-
-function draw_probe_ranges(Δ::Polygon; color=:rainbow, alpha=0.15)
-  grad = cgrad(color)
-  n = length(Δ.edges)
-  for i in 1:n
-    for range in get_probe_ranges(Δ,i)
-      draw(range,
-           fill=grad[(i-1)/(n-1)],
-           falpha=alpha,
-           lw=0.2,
-          )
+function intersect(e::Edge, Δ::Polygon)
+  intersections = []
+  for e1 in Δ.edges
+    int = e1 ∩ e
+    if !isnothing(int[1])
+      push!(intersections,int)
     end
   end
-  draw(Δ, lw=0.8)
+  for e1 in Δ.edges
+    filter!(i->(ev(e1,i[1])>=0), intersections)
+  end
+  unique!(i->i[1],intersections)
+  sort!(intersections, by=i->i[2])
+  first.(intersections)
 end
+e::Edge ∩ Δ::Polygon = intersect(e,Δ)
 
 
+
+Makie.convert_arguments(P::PointBased, Δ::Polygon) = convert_arguments(P, Point2.(Δ.vertices))
+
+"""
+Get some possible probe direction from `e`
+"""
 get_default_probe(e::Edge) = collect(gcdx(e.λ...)[2:3])
 
 function get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})
@@ -137,7 +141,7 @@ function get_probe_intervall(Δ::Polygon, i::Integer, probe::Vector{<:Integer})
   get_probe_intervall(e, probe)
 end
 
-function get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integer})
+function get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integer})::Polygon
   l = Δ.vertices[edge_index]
   r = Δ.vertices[edge_index%end + 1]
   e = Δ.edges[edge_index]
@@ -148,32 +152,39 @@ function get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integ
   offset + (M * [1 0; 0 1//2] * M^(-1)) * (-offset + range)
 end
 
-function get_probe_ranges(Δ::Polygon, edge_index::Integer)
+function get_probe_ranges(Δ::Polygon, edge_index::Integer)::Vector{Polygon}
   e = Δ.edges[edge_index]
   ed = [0 -1; 1 0] * e.λ
   dp = get_default_probe(e)
-  ranges = []
+  ranges = Polygon[]
   for i in get_probe_intervall(Δ, edge_index, dp)
     probe = dp + i*ed
     push!(ranges, get_probe_range(Δ, edge_index, probe))
   end
   ranges
 end
+get_probe_ranges(Δ::Polygon)::Vector{Vector{Polygon}} = [get_probe_ranges(Δ,i) for i in eachindex(Δ.edges)]
 
-function get_branch_cut_line(Δ::Polygon, vertex_index::Integer)
-  v = Δ.vertices[vertex_index]
-  e1 = Δ.edges[vertex_index]
-  e2 = vertex_index == 1 ? Δ.edges[end] : Δ.edges[vertex_index - 1]
-  
-  pq = e1.λ - e2.λ; kdist = gcd(pq...); pq = pq .÷ kdist;
-  dist = e1.λ[2]*pq[1] - e1.λ[1]*pq[2]
-  if kdist % dist != 0
-    @error "I don't think this is a potential almost toric corner"
+function get_branch_cut_line(e1::Edge, e2::Edge)
+  v, orientation = e1 ∩ e2
+  if isnothing(v)
+    return (nothing, nothing)
   end
-  (Edge(pq, -pq'*v), kdist ÷ dist)
+  if orientation == -1
+    e1,e2 = e2,e1
+  end
+  λ = e2.λ - e1.λ; kdist = gcd(λ...); λ = λ .÷ kdist;
+  dist = - λ[1]*e1.λ[2] + λ[2]*e1.λ[1]
+  if kdist % dist != 0
+    @warn "I don't think this is a potential almost toric corner"
+  end
+  (Edge(λ, - λ'*v), kdist ÷ dist)
 end
+get_branch_cut_line(Δ::Polygon, vertex_index::Integer) = 
+get_branch_cut_line(vertex_index == 1 ? last(Δ.edges) : Δ.edges[vertex_index - 1],
+                      Δ.edges[vertex_index])
 
-function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
+function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer}, s::Integer=1)
   # 1. Insert missing vertices at intersections of branch_cut_line with polygon:
   intersections = []
   for (i,e) in enumerate(Δ.edges) # collect intersections
@@ -185,6 +196,7 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   for e in Δ.edges # discard intersections outside
     filter!(i->(ev(e,i[1]) >= 0),intersections)
   end
+  offset = intersections[1][1]
   uint = unique(i->(i[1]), intersections)
   intersections = filter!(int1->(count(int2->(int2[1] == int1[1]), intersections) == 1),
                           uint) # select intersections that occur exactly once
@@ -195,18 +207,100 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   end
 
   # 2. Apply mutation
-  p,q = [0 -1;1 0]*branch_cut_line[1].λ; k=branch_cut_line[2]
+  p,q = [0 1;-1 0]*branch_cut_line[1].λ; k=s*branch_cut_line[2]
   M = [1+k*p*q -k*p^2; k*q^2 1-k*p*q]
-  offset = intersections[1][1]
   for i in eachindex(vertices)
     l = ev(branch_cut_line[1], vertices[i])
-    if l*k > 0
+    if l*s > 0
       vertices[i] = offset + M*(vertices[i]-offset)
     end
   end
   Polygon(vertices..., ensure_convex=true)
 end
-mutate(Δ::Polygon, vertex_index::Integer) = mutate(Δ, get_branch_cut_line(Δ, vertex_index))
+function mutate(Δ::Polygon, vertex_index::Integer, s::Integer=1)
+  bcl = get_branch_cut_line(Δ, vertex_index)
+  s = (sign(atan(bcl[1].λ...)) == 1) ? s : -s
+  mutate(Δ, (bcl[1],1), s)
+end
+
+
+
+
+function interact(Δ::Polygon)
+  fig = Figure()
+  ax = Axis(fig[1,1], autolimitaspect = 1.0)
+
+  Δ = Observable(Δ)
+
+  probe_range_colors = Integer[]
+  probe_ranges = lift(get_probe_ranges, Δ)
+  probe_range_colors = @lift(Integer[i for (i,edge_ranges) in enumerate($probe_ranges) for _ in edge_ranges])
+  flat_probe_ranges = @lift begin
+    [Point2.(Δ.vertices) for Δ in Iterators.flatten($probe_ranges)]
+  end
+
+  Δ_plt = poly!(Δ,
+                color=(:black,0),
+                strokecolor=(:black,1),
+                strokewidth=2,
+                inspectable=false)
+  probe_ranges_plot = poly!(flat_probe_ranges,
+                            color=probe_range_colors,
+                            colormap=(:rainbow,0.1),
+                            strokewidth=0.1,
+                            strokecolor=:black,
+                            inspectable=false
+                           )
+  vertex_buttons = scatter!(Δ,
+                            overdraw = true,
+                            color=(:black, 0.1),
+                            markersize=20)
+
+
+  bcl_line = Observable(Point2[])
+  linesegments!(bcl_line,
+                color=:black,
+                linestyle=[0,5,10],
+                linewidth=1.0,
+                overdraw=true
+               )
+
+  on(events(fig).mousebutton) do event
+    if event.button == Mouse.left && event.action == Mouse.press
+      plt, idx = pick(fig)
+      if plt == vertex_buttons
+        s = Keyboard.x in events(fig).keyboardstate ? -1 : 1
+        Δ[] = mutate(Δ[],idx, s)
+      end
+    end
+  end
+
+  on(events(fig).mouseposition) do event
+    plt, idx = pick(fig)
+    if plt == vertex_buttons
+      bcl = get_branch_cut_line(Δ[], idx)
+      bcl_line[] = Point2.(bcl[1] ∩ Δ[])
+    elseif !isempty(bcl_line[])
+      bcl_line[] = Point2[]
+    end
+  end
+
+  on(events(fig).keyboardbutton) do event
+    if event.action == Keyboard.press
+      if event.key == Keyboard.right
+        Δ[] = [1 1;0 1] * Δ[]
+      elseif event.key == Keyboard.left
+        Δ[] = [1 -1;0 1] * Δ[]
+      elseif event.key == Keyboard.up
+        Δ[] = [1 0;1 1] * Δ[]
+      elseif event.key == Keyboard.down
+        Δ[] = [1 0;-1 1] * Δ[]
+      end
+    end
+  end
+
+  return fig
+end
 
 CP2 = Polygon([-1,-1],[2,-1],[-1,2]);
 CP2_1 = Polygon([-1,0],[0,-1],[2,-1],[-1,2]);
