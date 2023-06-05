@@ -3,7 +3,7 @@ Calculations with 2D Delzant and almost toric moment Polytopes
 
 ## Requirements
 
-Uses the `GLMakie package.
+Uses the `GLMakie` package.
 
 ## Usage
 
