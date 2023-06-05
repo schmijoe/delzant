@@ -37,6 +37,7 @@ struct Polygon
   edges::Vector{<:Edge}
   vertices::Vector{Vector{<:Rational}}
 end
+
 """
 Construct the polygon bounded by `edges`
 """
@@ -74,7 +75,7 @@ function Polygon(edges::Edge...)
   end
 
   # Order intersections by outgoing edge orientation
-  sort!(intersections, by=i->(-atan(i[2][2].λ...)))
+  sort!(intersections, by=i->(atan(i[2][2].λ[2],i[2][2].λ[1])))
   vertices=first.(intersections)
   edges=[int[2][2] for int in intersections]
   Polygon(edges, vertices)
@@ -94,7 +95,7 @@ function Polygon(vertices::Vector{<:Real}...; ensure_convex=false)
   ensure_convex ? Polygon(edges...) : Polygon(edges, vertices)
 end
 
-Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon([M * v for v in Δ.vertices]...)
+Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon( (det(M) > 0 ? [M * v for v in Δ.vertices] : [M * v for v in reverse(Δ.vertices)] )...)
 Base.:+(u::Vector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
 
 function intersect(e::Edge, Δ::Polygon)
@@ -219,14 +220,14 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer}, s::Integer
 end
 function mutate(Δ::Polygon, vertex_index::Integer, s::Integer=1)
   bcl = get_branch_cut_line(Δ, vertex_index)
-  s = (sign(atan(bcl[1].λ...)) == 1) ? s : -s
+  s = (sign(atan(bcl[1].λ[2],bcl[1].λ[1])) == 1) ? s : -s
   mutate(Δ, (bcl[1],1), s)
 end
 
 
 
 
-function interact(Δ::Polygon)
+function interact(Δ::Polygon; button_size = 30)
   fig = Figure()
   ax = Axis(fig[1,1], autolimitaspect = 1.0)
 
@@ -253,8 +254,8 @@ function interact(Δ::Polygon)
                            )
   vertex_buttons = scatter!(Δ,
                             overdraw = true,
-                            color=(:black, 0.1),
-                            markersize=20)
+                            color=(:black, 0.00001),
+                            markersize=button_size)
 
 
   bcl_line = Observable(Point2[])
