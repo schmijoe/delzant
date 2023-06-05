@@ -203,6 +203,7 @@ function get_probe_ranges(Δ::Polygon, edge_index::Integer)::Vector{Polygon}
   end
   ranges
 end
+
 """
   `get_probe_ranges(Δ::Polygon)`
 
@@ -236,10 +237,15 @@ end
 Get an `Edge` representing the branch cut line if there was an almost toric corner at the vertex `Δ.vertices[vertex_index]`, aswell as the number of nodes.
 """
 get_branch_cut_line(Δ::Polygon, vertex_index::Integer) = 
-get_branch_cut_line(vertex_index == 1 ? last(Δ.edges) : Δ.edges[vertex_index - 1],
+  get_branch_cut_line(vertex_index == 1 ? last(Δ.edges) : Δ.edges[vertex_index - 1],
                       Δ.edges[vertex_index])
 
-function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer}, s::Integer=1)
+"""
+  `mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})`
+
+Get a polygon obtained by appling a shear matrix `M` corresponding to `branch_cut_line = (e, k)` to the positive side of `Δ` wrt. `e`, where `k` determines the power of `M`. If `k` is negative it will instead be applied to the negative side of `Δ` wrt. `e`.
+"""
+function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   # 1. Insert missing vertices at intersections of branch_cut_line with polygon:
   intersections = []
   for (i,e) in enumerate(Δ.edges) # collect intersections
@@ -262,23 +268,29 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer}, s::Integer
   end
 
   # 2. Apply mutation
-  p,q = [0 1;-1 0]*branch_cut_line[1].λ; k=s*branch_cut_line[2]
+  p,q = [0 1;-1 0]*branch_cut_line[1].λ; k=branch_cut_line[2]
   M = [1+k*p*q -k*p^2; k*q^2 1-k*p*q]
   for i in eachindex(vertices)
     l = ev(branch_cut_line[1], vertices[i])
-    if l*s > 0
+    if l*k > 0
       vertices[i] = offset + M*(vertices[i]-offset)
     end
   end
   Polygon(vertices..., ensure_convex=true)
 end
-function mutate(Δ::Polygon, vertex_index::Integer, s::Integer=1)
+
+"""
+  `mutate(Δ::Polygon, vertex_index::Integer, k::Integer=1)`
+
+Assume the corner `Δ.vertices[vertex_index]` is almost toric, and try to perform `k` mutations.
+"""
+function mutate(Δ::Polygon, vertex_index::Integer, k::Integer=1)
   bcl = get_branch_cut_line(Δ, vertex_index)
-  s = (sign(atan(bcl[1].λ[2],bcl[1].λ[1])) == 1) ? s : -s
-  mutate(Δ, (bcl[1],1), s)
+  if abs(k) > bcl[2]
+    @warn "k is too large." k bcl
+  end
+  mutate(Δ, (bcl[1],k))
 end
-
-
 
 
 function interact(Δ::Polygon; button_size = 30)
@@ -324,8 +336,8 @@ function interact(Δ::Polygon; button_size = 30)
     if event.button == Mouse.left && event.action == Mouse.press
       plt, idx = pick(fig)
       if plt == vertex_buttons
-        s = Keyboard.x in events(fig).keyboardstate ? -1 : 1
-        Δ[] = mutate(Δ[],idx, s)
+        k = Keyboard.left_shift in events(fig).keyboardstate ? -1 : 1
+        Δ[] = mutate(Δ[],idx, k)
       end
     end
   end
