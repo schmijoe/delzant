@@ -7,12 +7,22 @@ Base.rationalize(x::Integer) = x//1
 struct Edge
   λ::Vector{<:Integer}
   c::Rational{Int128}
+  """
+    `Edge(λ::Vector{<:Real}, c::<:Real)`
+
+  Construct edge/halfspace satisfying equation `λ'*x + c >= 0`.
+  """
   function Edge(λ::Vector{<:Real}, c::T) where T<:Real
     λ = rationalize.(λ); c = rationalize(c)
     d = gcd(λ...);
     new(λ .÷ d, c//d)
   end
 end
+"""
+  `Edge(p1::Vector{<:Real}, p2::Vector{<:Real})`
+
+Consturct edge/hafspace containing points `p1` and `p2`.
+"""
 function Edge(p1::Vector{<:Real}, p2::Vector{<:Real})
   λ = [0 -1; 1 0] * (p2-p1)
   Edge(λ, -λ'*p1)
@@ -21,12 +31,14 @@ Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
 
-function ev(e::Edge, p::Vector{<:Real})
-  return p'*e.λ + e.c
-end
+ev(e::Edge, p::Vector{<:Real}) = p'*e.λ + e.c
 
 
-function intersect(e1::Edge, e2::Edge) # Intersection with sign
+"""
+  `intersect(e1::Edge, e2::Edge)`
+Intersection of `e1`, `e2` with orientation.
+"""
+function intersect(e1::Edge, e2::Edge)
   A = [e1.λ'//1; e2.λ'//1]; detA = det(A);
   (detA == 0 ? nothing : -A^-1*[e1.c; e2.c], sign(detA))
 end
@@ -98,6 +110,11 @@ end
 Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon( (det(M) > 0 ? [M * v for v in Δ.vertices] : [M * v for v in reverse(Δ.vertices)] )...)
 Base.:+(u::Vector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
 
+"""
+  `intersect(e::Edge, Δ::Polygon)`
+
+Intersections of `e` with `Δ`
+"""
 function intersect(e::Edge, Δ::Polygon)
   intersections = []
   for e1 in Δ.edges
@@ -116,7 +133,7 @@ end
 e::Edge ∩ Δ::Polygon = intersect(e,Δ)
 
 
-
+# Enable Makie to plot Polygon
 Makie.convert_arguments(P::PointBased, Δ::Polygon) = convert_arguments(P, Point2.(Δ.vertices))
 
 """
@@ -124,6 +141,12 @@ Get some possible probe direction from `e`
 """
 get_default_probe(e::Edge) = collect(gcdx(e.λ...)[2:3])
 
+"""
+  `get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})`
+
+Get range of `k` for which `probe + k*[0 -1; 1 0]*e[2].λ` is a reasonable probe in the tripple of edges `e[1]`, `e[2]` ,`e[3]`.
+
+"""
 function get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})
   v = [0 -1; 1 0] * e[2].λ
   a = - (probe' * e[1].λ) / (v' * e[1].λ)
@@ -131,6 +154,12 @@ function get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})
   u = sort([a,b])
   return floor(Int,u[1]):ceil(Int,u[2])
 end
+
+"""
+  `get_probe_intervall(Δ::Polygon, i::Integer, probe::Vector{<:Integer})`
+
+Get range of `k` for which `probe + k*[0 -1; 1 0]*Δ.edges[i].λ` is a reasonable probe in the polygon Δ.
+"""
 function get_probe_intervall(Δ::Polygon, i::Integer, probe::Vector{<:Integer})
   if 1<i<length(Δ.edges)
     e = Δ.edges[i-1:i+1]
@@ -142,6 +171,11 @@ function get_probe_intervall(Δ::Polygon, i::Integer, probe::Vector{<:Integer})
   get_probe_intervall(e, probe)
 end
 
+"""
+  `get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integer})`
+
+Get a polygon describing which fibres in Δ can be displaced by a probe shot from edge `Δ.edges[edge_index]` in direction `probe`.
+"""
 function get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integer})::Polygon
   l = Δ.vertices[edge_index]
   r = Δ.vertices[edge_index%end + 1]
@@ -153,6 +187,11 @@ function get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integ
   offset + (M * [1 0; 0 1//2] * M^(-1)) * (-offset + range)
 end
 
+"""
+  `get_probe_ranges(Δ::Polygon, edge_index::Integer)`
+
+Get a list of polygons describing which fibres in `Δ` can be displaced by shooting reasonable probes from `Δ.edges[edge_index]`.
+"""
 function get_probe_ranges(Δ::Polygon, edge_index::Integer)::Vector{Polygon}
   e = Δ.edges[edge_index]
   ed = [0 -1; 1 0] * e.λ
@@ -164,8 +203,18 @@ function get_probe_ranges(Δ::Polygon, edge_index::Integer)::Vector{Polygon}
   end
   ranges
 end
+"""
+  `get_probe_ranges(Δ::Polygon)`
+
+Get a list for every edge `e` of `Δ` of polygons describing which fibres in `Δ` can be displaced by shooting reasonable probes from `e`.
+"""
 get_probe_ranges(Δ::Polygon)::Vector{Vector{Polygon}} = [get_probe_ranges(Δ,i) for i in eachindex(Δ.edges)]
 
+"""
+  `get_branch_cut_line(e1::Edge, e2::Edge)`
+
+Get an `Edge` representing the branch cut line if there was an almost toric corner at the intersection of `e1` and `e2`, aswell as the number of nodes.
+"""
 function get_branch_cut_line(e1::Edge, e2::Edge)
   v, orientation = e1 ∩ e2
   if isnothing(v)
@@ -181,6 +230,11 @@ function get_branch_cut_line(e1::Edge, e2::Edge)
   end
   (Edge(λ, - λ'*v), kdist ÷ dist)
 end
+"""
+  `get_branch_cut_line(Δ::Polygon, vertex_index::Integer)`
+
+Get an `Edge` representing the branch cut line if there was an almost toric corner at the vertex `Δ.vertices[vertex_index]`, aswell as the number of nodes.
+"""
 get_branch_cut_line(Δ::Polygon, vertex_index::Integer) = 
 get_branch_cut_line(vertex_index == 1 ? last(Δ.edges) : Δ.edges[vertex_index - 1],
                       Δ.edges[vertex_index])
