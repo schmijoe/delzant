@@ -289,11 +289,12 @@ function mutate(Δ::Polygon, vertex_index::Integer, k::Integer=1)
   if abs(k) > bcl[2]
     @warn "k is too large." k bcl
   end
+  k = (sign(atan(bcl[1].λ[2],bcl[1].λ[1])) == 1) ? k : -k
   mutate(Δ, (bcl[1],k))
 end
 
 
-function interact(Δ::Polygon; button_size = 30)
+function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
   fig = Figure()
   ax = Axis(fig[1,1], autolimitaspect = 1.0)
 
@@ -320,7 +321,7 @@ function interact(Δ::Polygon; button_size = 30)
                            )
   vertex_buttons = scatter!(Δ,
                             overdraw = true,
-                            color=(:black, 0.00001),
+                            color=button_color,
                             markersize=button_size)
 
 
