@@ -6,7 +6,7 @@ Base.rationalize(x::Integer) = x//1
 
 struct Edge
   λ::Vector{<:Integer}
-  c::Rational{Int128}
+  c::Rational
   """
     `Edge(λ::Vector{<:Real}, c::<:Real)`
 
@@ -14,6 +14,9 @@ struct Edge
   """
   function Edge(λ::Vector{<:Real}, c::T) where T<:Real
     λ = rationalize.(λ); c = rationalize(c)
+    if λ[1] == λ[2] == 0
+      @error "Normal Vector must be non-zero" λ
+    end
     d = gcd(λ...);
     new(λ .÷ d, c//d)
   end
@@ -30,6 +33,7 @@ end
 Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
+Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
 
 ev(e::Edge, p::Vector{<:Real}) = p'*e.λ + e.c
 
@@ -93,18 +97,27 @@ function Polygon(edges::Edge...)
   Polygon(edges, vertices)
 end
 
+function drop_colinear!(vertices::Vector{<:Vector})
+  tobedeleted = []
+  for i in eachindex(vertices)
+    u = vertices[i % end + 1] - vertices[i]
+    v = vertices[i==1 ? end : i-1] - vertices[i]
+    if u[1]*v[2] - u[2]*v[1] == 0 && (u != [0,0])
+      push!(tobedeleted, i)
+    end
+  end
+  deleteat!(vertices, tobedeleted)
+end
 """
 Construct polygon given by `vertices`. They must be in counter-clockwise order.
-
-If `ensure_convex` is true, the resulting edges are passed to `Polygon(edges::Edge...)`
 """
-function Polygon(vertices::Vector{<:Real}...; ensure_convex=false)
-  vertices = [rationalize.(v) for v in vertices]
+function Polygon(vertices::Vector{<:Real}...)
+  vertices = drop_colinear!([ rationalize.(v) for v in vertices ])
   edges = Edge[]
   for i in eachindex(vertices)
     push!(edges, Edge(vertices[i], vertices[i%end+1]))
   end
-  ensure_convex ? Polygon(edges...) : Polygon(edges, vertices)
+  Polygon(edges, vertices)
 end
 
 Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon( (det(M) > 0 ? [M * v for v in Δ.vertices] : [M * v for v in reverse(Δ.vertices)] )...)
@@ -133,8 +146,9 @@ end
 e::Edge ∩ Δ::Polygon = intersect(e,Δ)
 
 
+
 # Enable Makie to plot Polygon
-Makie.convert_arguments(P::PointBased, Δ::Polygon) = convert_arguments(P, Point2.(Δ.vertices))
+Makie.convert_arguments(P::PointBased, Δ::Polygon) = convert_arguments(P, Point2f.(Δ.vertices))
 
 """
 Get some possible probe direction from `e`
@@ -257,14 +271,19 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   for e in Δ.edges # discard intersections outside
     filter!(i->(ev(e,i[1]) >= 0),intersections)
   end
-  offset = intersections[1][1]
-  uint = unique(i->(i[1]), intersections)
-  intersections = filter!(int1->(count(int2->(int2[1] == int1[1]), intersections) == 1),
-                          uint) # select intersections that occur exactly once
-  sort!(intersections, by=i->(i[2]), rev=true) # reverse order by the edge index
-  vertices = copy(Δ.vertices)
-  for (int, edge_index) in intersections
-    insert!(vertices, edge_index+1, int)
+  if !isempty(intersections)
+    offset = intersections[1][1]
+    uint = unique(i->(i[1]), intersections)
+    intersections = filter!(int1->(count(int2->(int2[1] == int1[1]), intersections) == 1),
+                            uint) # select intersections that occur exactly once
+    sort!(intersections, by=i->(i[2]), rev=true) # reverse order by the edge index
+    vertices = copy(Δ.vertices)
+    for (int, edge_index) in intersections
+      insert!(vertices, edge_index+1, int)
+    end
+  else
+    vertices = copy(Δ.vertices)
+    offset = - branch_cut_line[1].λ * branch_cut_line[1].c//sum(t->t^2, branch_cut_line[1].λ)
   end
 
   # 2. Apply mutation
@@ -276,7 +295,7 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
       vertices[i] = offset + M*(vertices[i]-offset)
     end
   end
-  Polygon(vertices..., ensure_convex=true)
+  Polygon(vertices...)
 end
 
 """
@@ -293,14 +312,12 @@ function mutate(Δ::Polygon, vertex_index::Integer, k::Integer=1)
   mutate(Δ, (bcl[1],k))
 end
 
-
 function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
   fig = Figure()
   ax = Axis(fig[1,1], autolimitaspect = 1.0)
 
   Δ = Observable(Δ)
 
-  probe_range_colors = Integer[]
   probe_ranges = lift(get_probe_ranges, Δ)
   probe_range_colors = @lift(Integer[i for (i,edge_ranges) in enumerate($probe_ranges) for _ in edge_ranges])
   flat_probe_ranges = @lift begin
@@ -338,7 +355,7 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
       plt, idx = pick(fig)
       if plt == vertex_buttons
         k = Keyboard.left_shift in events(fig).keyboardstate ? -1 : 1
-        Δ[] = mutate(Δ[],idx, k)
+        Δ[] = mutate(Δ[], idx, k)
       end
     end
   end
