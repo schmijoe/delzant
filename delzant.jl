@@ -1,11 +1,12 @@
 using LinearAlgebra
+using StaticArrays, CircularArrays
 using GLMakie
 
 Base.rationalize(x::Rational) = x
 Base.rationalize(x::Integer) = x//1
 
 struct Edge
-  λ::Vector{<:Integer}
+  λ::SVector{2,<:Integer}
   c::Rational
   """
     `Edge(λ::Vector{<:Real}, c::<:Real)`
@@ -18,7 +19,7 @@ struct Edge
       @error "Normal Vector must be non-zero" λ
     end
     d = gcd(λ...);
-    new(λ .÷ d, c//d)
+    new(SVector{2}(λ .÷ d), c//d)
   end
 end
 """
@@ -36,6 +37,7 @@ Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
 Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
 
 ev(e::Edge, p::Vector{<:Real}) = p'*e.λ + e.c
+(e::Edge)(p::Vector{<:Real}) = p'*e.λ + e.c
 
 
 """
@@ -50,15 +52,16 @@ e1::Edge ∩ e2::Edge = intersect(e1,e2)
 
 
 struct Polygon
-  edges::Vector{<:Edge}
-  vertices::Vector{Vector{<:Rational}}
+  edges::Vector{Edge}
+  vertices::CircularVector{<:SVector{2,<:Rational}}
 end
 
-function drop_colinear!(vertices::Vector{<:Vector})
+function drop_colinear!(vertices::Vector{<:SVector{2,<:Rational}})
+  vertices = CircularVector(vertices)
   tobedeleted = []
   for i in eachindex(vertices)
-    u = vertices[i % end + 1] - vertices[i]
-    v = vertices[i==1 ? end : i-1] - vertices[i]
+    u = vertices[i + 1] - vertices[i]
+    v = vertices[i - 1] - vertices[i]
     if u[1]*v[2] - u[2]*v[1] == 0 && (u != [0,0])
       push!(tobedeleted, i)
     end
@@ -68,16 +71,17 @@ end
 """
 Construct polygon given by `vertices`. They must be in counter-clockwise order.
 """
-function Polygon(vertices::Vector{<:Real}...)
+function Polygon(vertices::SVector{2,<:Real}...)
   vertices = drop_colinear!([ rationalize.(v) for v in vertices ])
   edges = Edge[]
   for i in eachindex(vertices)
-    push!(edges, Edge(vertices[i], vertices[i%end+1]))
+    push!(edges, Edge(vertices[i], vertices[i + 1]))
   end
   Polygon(edges, vertices)
 end
+Polygon(vertices::Vector{<:Real}...) = Polygon(SVector{2}.(vertices))
 
-Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon( (det(M) > 0 ? [M * v for v in Δ.vertices] : [M * v for v in reverse(Δ.vertices)] )...)
+Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon( ([M * v for v in (det(M) > 0 ? Δ.vertices : reverse(Δ.vertices))])...)
 Base.:+(u::Vector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
 
 """
@@ -90,7 +94,7 @@ function intersect(e::Edge, Δ::Polygon)
   for (i,e1) in enumerate(Δ.edges)
     int = e1 ∩ e
     if !isnothing(int[1])
-      dir = Δ.vertices[i%end+1] - Δ.vertices[i]
+      dir = Δ.vertices[i+1] - Δ.vertices[i]
       t = dir ⋅ (int[1] - Δ.vertices[i])
       if 0 <= t <= dir⋅dir
         push!(intersections,int)
@@ -113,7 +117,7 @@ function refine(Δ::Polygon, halfspaces::Edge...)
     for (i,e1) in enumerate(Δ.edges)
       int = e1 ∩ e
       if !isnothing(int[1])
-        dir = Δ.vertices[i%end+1] - Δ.vertices[i]
+        dir = Δ.vertices[i+1] - Δ.vertices[i]
         t = dir ⋅ (int[1] - Δ.vertices[i])
         if 0 < t < dir⋅dir
           push!(intersections,(int..., i, t))
@@ -150,7 +154,7 @@ end
 
 
 # Enable Makie to plot Polygon
-Makie.convert_arguments(P::PointBased, Δ::Polygon) = convert_arguments(P, Point2f.(Δ.vertices))
+Makie.convert_arguments(P::PointBased, Δ::Polygon) = (decompose(Point2f, Point2f.(Δ.vertices)),)
 
 """
 Get some possible probe direction from `e`
