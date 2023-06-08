@@ -13,7 +13,7 @@ struct Edge
 
   Construct edge/halfspace satisfying equation `λ'*x + c >= 0`.
   """
-  function Edge(λ::Vector{<:Real}, c::T) where T<:Real
+  function Edge(λ::AbstractVector{<:Real}, c::T) where T<:Real
     λ = rationalize.(λ); c = rationalize(c)
     if λ[1] == λ[2] == 0
       @error "Normal Vector must be non-zero" λ
@@ -27,7 +27,7 @@ end
 
 Consturct edge/hafspace containing points `p1` and `p2`.
 """
-function Edge(p1::Vector{<:Real}, p2::Vector{<:Real})
+function Edge(p1::AbstractVector{<:Real}, p2::AbstractVector{<:Real})
   λ = [0 -1; 1 0] * (p2-p1)
   Edge(λ, -λ'*p1)
 end
@@ -36,8 +36,7 @@ Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
 Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
 
-ev(e::Edge, p::Vector{<:Real}) = p'*e.λ + e.c
-(e::Edge)(p::Vector{<:Real}) = p'*e.λ + e.c
+(e::Edge)(p::AbstractVector{<:Real}) = p'*e.λ + e.c
 
 
 """
@@ -72,17 +71,17 @@ end
 Construct polygon given by `vertices`. They must be in counter-clockwise order.
 """
 function Polygon(vertices::SVector{2,<:Real}...)
-  vertices = drop_colinear!([ rationalize.(v) for v in vertices ])
+  vertices = drop_colinear!(collect(vertices))
   edges = Edge[]
   for i in eachindex(vertices)
     push!(edges, Edge(vertices[i], vertices[i + 1]))
   end
   Polygon(edges, vertices)
 end
-Polygon(vertices::Vector{<:Real}...) = Polygon(SVector{2}.(vertices))
+Polygon(vertices::Vector{<:Real}...) = Polygon((SVector{2,Rational}(rationalize.(v)) for v in vertices)...)
 
-Base.:*(M::Matrix{<:Real}, Δ::Polygon) = Polygon( ([M * v for v in (det(M) > 0 ? Δ.vertices : reverse(Δ.vertices))])...)
-Base.:+(u::Vector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
+Base.:*(M::AbstractMatrix{<:Real}, Δ::Polygon) = Polygon( ([M * v for v in (det(M) > 0 ? Δ.vertices : reverse(Δ.vertices))])...)
+Base.:+(u::AbstractVector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
 
 """
   `intersect(e::Edge, Δ::Polygon)`
@@ -128,7 +127,7 @@ function refine(Δ::Polygon, halfspaces::Edge...)
   vertices = copy(Δ.vertices)
   sort!(intersections, by=i->(i[3],i[4]), rev=true)
   for int in intersections
-    insert!(vertices, int[3] + 1, int[1])
+    insert!(vertices.data, int[3] + 1, int[1])
   end
   vertices
 end
@@ -143,7 +142,7 @@ function slice(Δ::Polygon, halfspaces::Edge...)
   tobedeleted = Int[]
   for (i,v) in enumerate(vertices)
     for e in halfspaces
-      if ev(e,v) < 0
+      if e(v) < 0
         push!(tobedeleted, i)
         break
       end
@@ -274,7 +273,7 @@ function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   p,q = [0 1;-1 0]*branch_cut_line[1].λ; k=branch_cut_line[2]
   M = [1+k*p*q -k*p^2; k*q^2 1-k*p*q]
   for i in eachindex(vertices)
-    l = ev(branch_cut_line[1], vertices[i])
+    l = branch_cut_line[1](vertices[i])
     if l*k > 0
       vertices[i] = offset + M*(vertices[i]-offset)
     end
@@ -314,7 +313,7 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
   probe_ranges = Observable(get_probe_ranges(Δ[]))
   probe_range_colors = @lift(Integer[i for (i,edge_ranges) in enumerate($probe_ranges) for _ in edge_ranges])
   flat_probe_ranges = @lift begin
-    [Point2.(Δ.vertices) for Δ in Iterators.flatten($probe_ranges)]
+    [Point.(Δ.vertices.data) for Δ in Iterators.flatten($probe_ranges)]
   end
 
   Δ_plt = poly!(Δ,
@@ -363,7 +362,7 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
     plt, idx = pick(fig)
     if plt == vertex_buttons
       bcl = get_branch_cut_line(Δ[], idx)
-      bcl_line[] = Point2.(intersect(bcl[1], Δ[]))
+      bcl_line[] = Point.(intersect(bcl[1], Δ[]))
     elseif !isempty(bcl_line[])
       bcl_line[] = Point2[]
     end
