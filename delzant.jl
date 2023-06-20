@@ -38,6 +38,8 @@ Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
 
 (e::Edge)(p::AbstractVector{<:Real}) = p'*e.λ + e.c
 
+withbigint(e::Edge) = Edge(big.(e.λ), big(e.c))
+
 
 """
   `intersect(e1::Edge, e2::Edge)`
@@ -54,6 +56,8 @@ struct Polygon
   edges::Vector{Edge}
   vertices::CircularVector{<:SVector{2,<:Rational}}
 end
+
+withbigint(Δ::Polygon) = Polygon(withbigint.(Δ.edges), map(v->big.(v), Δ.vertices))
 
 function drop_colinear!(vertices::Vector{<:SVector{2,<:Rational}})
   vertices = CircularVector(vertices)
@@ -151,9 +155,9 @@ function slice(Δ::Polygon, halfspaces::Edge...)
   Polygon(deleteat!(vertices, tobedeleted)...)
 end
 
+get_affine_length(v::AbstractVector) = gcd(rationalize.(v)...)
 
-# Enable Makie to plot Polygon
-Makie.convert_arguments(P::PointBased, Δ::Polygon) = (decompose(Point2f, Point2f.(Δ.vertices)),)
+get_affine_edge_length(Δ::Polygon, i::Int) = get_affine_length(Δ.vertices[i+1] - Δ.vertices[i])
 
 """
 Get some possible probe direction from `e`
@@ -304,23 +308,20 @@ function mutate_with(range::Polygon, Δ::Polygon, vertex_index, k::Integer=1)
   mutate(range, (bcl[1],k))
 end
 
+# Enable Makie to plot Polygon
+Makie.convert_arguments(P::PointBased, Δ::Polygon) = (decompose(Point2f, Point2f.(Δ.vertices)),)
+
 function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
   fig = Figure()
   ax = Axis(fig[1,1], autolimitaspect = 1.0)
 
   Δ = Observable(Δ)
-
   probe_ranges = Observable(get_probe_ranges(Δ[]))
   probe_range_colors = @lift(Integer[i for (i,edge_ranges) in enumerate($probe_ranges) for _ in edge_ranges])
   flat_probe_ranges = @lift begin
     [Point.(Δ.vertices.data) for Δ in Iterators.flatten($probe_ranges)]
   end
 
-  Δ_plt = poly!(Δ,
-                color=(:black,0),
-                strokecolor=(:black,1),
-                strokewidth=2,
-                inspectable=false)
   probe_ranges_plot = poly!(flat_probe_ranges,
                             color=probe_range_colors,
                             colormap=(:rainbow,0.1),
@@ -328,6 +329,12 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
                             strokecolor=:black,
                             inspectable=false
                            )
+  Δ_plt = poly!(Δ,
+                color=(:black,0),
+                strokecolor=(:black,1),
+                strokewidth=4,
+#                inspector_label = (plt, idx, pos) -> "Affine Lenght $(get_affine_edge_length(Δ[], i))"
+               )
   vertex_buttons = scatter!(Δ,
                             overdraw = true,
                             color=button_color,
@@ -416,3 +423,7 @@ CP2_1 = Polygon([-1,0],[0,-1],[2,-1],[-1,2]);
 CP2_2 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[-1,2]);
 CP2_3 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[0,1],[-1,1]);
 Δ1 = Polygon([0,0],[26,0],[26,1],[22,9],[21,10],[20,10]);
+Δ2 = Polygon([0,0],[11,0],[11,1],[10,3],[9,4],[8,4]);
+Δ3 = Polygon([-3,0],[-2,-2],[-1,-3],[0,-3],[2,-2],[3,-1],[3,0],[2,2],[1,3],[0,3],[-2,2],[-3,1]);
+Δ4 = Polygon([-4,0],[-2,-4],[-1,-5],[0,-5],[4,-3],[5,-2],[5,-1],[3,3],[2,4],[1,4],[-3,2],[-4,1]);
+Δ5 = Polygon([-5,-5],[-3,-7],[-1,-7],[5,-5],[7,-3],[7,-1],[5,5],[3,7],[1,7],[-5,5],[-7,3],[-7,1]);
