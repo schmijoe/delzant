@@ -35,6 +35,9 @@ Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
 Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
+Base.:*(M::AbstractMatrix{<:Rational}, e::Edge) = Edge(M'^-1 * e.λ, e.c)
+Base.:+(u::AbstractVector{<:Rational}, e::Edge) = Edge(e.λ, e.c - e.λ · u)
+Base.:+(o::Rational, e::Edge) = Edge(e.λ, e.c + o)
 Base.show(io::IO, e::Edge) = print(io, "⟨$(e.λ),⋅⟩ + $(e.c) ≥ 0")
 
 (e::Edge)(p::AbstractVector{<:Real}) = p'*e.λ + e.c
@@ -89,13 +92,15 @@ Polygon(vertices::AbstractVector{<:Real}...) = Polygon((SVector{2,Rational}(rati
 function Polygon(edges::Edge...)
   edges = sort!(collect(edges),by=e->(atan(e.λ[2],e.λ[1]), e.c))
   edges = unique!(e->e.λ, edges) |> CircularVector
-  while true
+  while !isempty(edges)
     vertices = CircularVector(Vector{Union{Nothing, SVector{2,Rational}}}(nothing, length(edges)))
     vertices[0] = first(edges[-1] ∩ edges[0])
     tobedeleted = Int[]
     for i in eachindex(edges)
       vertices[i] = first(edges[i-1] ∩ edges[i])
-      if det([(vertices[i]-vertices[i-1])' ; edges[i-1].λ']) < 0
+      n1 = vertices[i-1] === nothing
+      n2 = vertices[i] === nothing
+      if (n1 && n2) || (!(n1 || n2) && det([(vertices[i]-vertices[i-1])' ; edges[i-1].λ']) < 0)
         push!(tobedeleted, i-1)
       end
     end
@@ -104,18 +109,21 @@ function Polygon(edges::Edge...)
     end
     deleteat!(edges, tobedeleted)
   end
+  return Polygon(CircularVector(Edge[]), CircularVector(SVector{2,Rational}[]))
 end
 
 function Base.:*(M::AbstractMatrix{<:Rational}, Δ::Polygon)
   vertices = map(v->SVector{2}(M*v), Δ.vertices)
-  edges = map(e->Edge(M'^-1 * e.λ, e.c), Δ.edges)
+  edges = map(e->M*e, Δ.edges)
   if det(M) < 0
     reverse!(vertices)
     reverse!(edges)
   end
   Polygon(edges, vertices)
 end
-Base.:+(u::AbstractVector{<:Rational}, Δ::Polygon) = Polygon(map(e->Edge(e.λ, e.c - e.λ · u), Δ.edges),map(v->u + v, Δ.vertices))
+Base.:+(u::AbstractVector{<:Rational}, Δ::Polygon) = Polygon(map(e->u+e, Δ.edges),map(v->u + v, Δ.vertices))
+Base.:+(o::Rational, Δ::Polygon) = Polygon(map(e->o+e, Δ.edges)...)
+Base.isempty(Δ::Polygon) = isempty(Δ.edges)
 
 (Δ::Polygon)(p::AbstractVector{<:Real}) = minimum(e->e(p), Δ.edges)
 
@@ -124,7 +132,7 @@ get_affine_edge_length(Δ::Polygon, i::Int) = gcd(Δ.vertices[i+1] - Δ.vertices
 
 function Base.show(io::IO, Δ::Polygon)
   for i in eachindex(Δ.vertices)
-    w = [0 -1;1 0] * (Δ.edges[i-1].λ-Δ.edges[i].λ)
+    w = Rational[0 -1;1 0] * (Δ.edges[i-1].λ-Δ.edges[i].λ)
     k = gcd(w)
     area = det([Δ.edges[i-1].λ' ; Δ.edges[i].λ'])
     println(io::IO, "$(sprint(show, Δ.vertices[i])); [q,p] = $(w .÷ k); k = $k; area = $area")
@@ -294,56 +302,107 @@ end
 Get an `Edge` representing the branch cut line if there was an almost toric corner at the vertex `Δ.vertices[vertex_index]`, aswell as the number of nodes.
 """
 get_branch_cut_line(Δ::Polygon, vertex_index::Integer) = 
-  get_branch_cut_line(vertex_index == 1 ? last(Δ.edges) : Δ.edges[vertex_index - 1],
-                      Δ.edges[vertex_index])
+  get_branch_cut_line(Δ.edges[vertex_index-1], Δ.edges[vertex_index])
 
 """
-  `mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})`
+  `mutate!(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})`
 
 Get a polygon obtained by appling a shear matrix `M` corresponding to `branch_cut_line = (e, k)` to the positive side of `Δ` wrt. `e`, where `k` determines the power of `M`. If `k` is negative it will instead be applied to the negative side of `Δ` wrt. `e`.
 """
-function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
+function mutate!(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   # 1. Insert missing vertices at intersections of branch_cut_line with polygon:
-  vertices = refine!(deepcopy(Δ), branch_cut_line[1]).vertices
+  refine!(Δ, branch_cut_line[1])
   offset = - branch_cut_line[1].λ * branch_cut_line[1].c//sum(t->t^2, branch_cut_line[1].λ)
 
   # 2. Apply mutation
   p,q = [0 1;-1 0]*branch_cut_line[1].λ; k=branch_cut_line[2]
-  M = [1+k*p*q -k*p^2; k*q^2 1-k*p*q]
-  for i in eachindex(vertices)
-    l = branch_cut_line[1](vertices[i])
-    if l*k > 0
-      vertices[i] = offset + M*(vertices[i]-offset)
+  M = Rational[1+k*p*q -k*p^2; k*q^2 1-k*p*q]
+  l1 = l2 = branch_cut_line[1](Δ.vertices[1])
+  for i in eachindex(Δ.vertices)
+    l1 = l2
+    l2 = branch_cut_line[1](Δ.vertices[i+1])
+    if l1*k > 0
+      Δ.vertices[i] = offset + M*(Δ.vertices[i]-offset)
+    end
+    if l1*k > 0 || l2*k > 0
+      Δ.edges[i] = offset + M*(-offset + Δ.edges[i])
     end
   end
-  Polygon(vertices...)
+
+  # Remove duplicate edges
+  for i in reverse(eachindex(Δ.edges))
+    if Δ.edges[i] == Δ.edges[i-1]
+      deleteat!(Δ.edges, i)
+      deleteat!(Δ.vertices, i)
+    end
+  end
+  Δ
 end
 
 """
-  `mutate(Δ::Polygon, vertex_index::Integer, k::Integer=1)`
+  `mutate!(Δ::Polygon, vertex_index::Integer, k::Integer=1)`
 
 Assume the corner `Δ.vertices[vertex_index]` is almost toric, and try to perform `k` mutations.
 """
-function mutate(Δ::Polygon, vertex_index::Integer, k::Integer=1)
+function mutate!(Δ::Polygon, vertex_index::Integer, k::Integer=1)
   bcl = get_branch_cut_line(Δ, vertex_index)
   if abs(k) > bcl[2]
     @warn "k is too large." k bcl
   end
   k = (sign(atan(bcl[1].λ[2],bcl[1].λ[1])) == 1) ? k : -k
-  mutate(Δ, (bcl[1],k))
+  mutate!(Δ, (bcl[1],k))
 end
 
-function mutate_with(range::Polygon, Δ::Polygon, vertex_index, k::Integer=1)
+function mutate_with!(range::Polygon, Δ::Polygon, vertex_index, k::Integer=1)
   bcl = get_branch_cut_line(Δ, vertex_index)
   if abs(k) > bcl[2]
     @warn "k is too large." k bcl
   end
   k = (sign(atan(bcl[1].λ[2],bcl[1].λ[1])) == 1) ? k : -k
-  mutate(range, (bcl[1],k))
+  mutate!(range, (bcl[1],k))
 end
 
 # Enable Makie to plot Polygon
 Makie.convert_arguments(P::PointBased, Δ::Polygon) = (decompose(Point2f, Point2f.(Δ.vertices)),)
+
+function draw(Δ::Polygon;
+  fig=nothing,
+  ax=nothing, 
+  outline_width = 4,
+  outline_color = (:black, 1),
+  draw_contours = true,
+  contour_width = 0.2,
+  contour_density::Rational = 1//5,
+  contour_color = (:black, 1)
+  )
+  if fig === nothing
+    fig = Figure()
+  end
+  if ax===nothing
+    ax = Axis(fig[1,1], autolimitaspect = 1.0)
+  end
+  current_axis!(ax)
+
+  if draw_contours
+    for inset in 0:contour_density:10
+      cont = (-inset + Δ)
+      if isempty(cont)
+        break
+      end
+      poly!(Point2f.(cont.vertices.data),
+            color=(:black,0),
+            strokecolor=contour_color,
+            strokewidth=contour_width)
+    end
+  end
+
+  poly!(Point2f.(Δ.vertices.data),
+        color=(:black, 0),
+        strokecolor=outline_color,
+        strokewidth=outline_width)
+
+  return fig,ax
+end
 
 function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), show_probe_ranges = true)
   fig = Figure()
@@ -396,11 +455,11 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), s
         if show_probe_ranges
           for edge_range in probe_ranges[]
             for i in eachindex(edge_range)
-              edge_range[i] = mutate_with(edge_range[i], Δ[], idx, k)
+              edge_range[i] = mutate_with!(edge_range[i], Δ[], idx, k)
             end
           end
         end
-        Δ[] = mutate(Δ[], idx, k)
+        Δ[] = mutate!(Δ[], idx, k)
         show_probe_ranges && notify(probe_ranges)
       end
     end
