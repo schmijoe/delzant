@@ -18,7 +18,7 @@ struct Edge
     if λ[1] == λ[2] == 0
       @error "Normal Vector must be non-zero" λ
     end
-    d = gcd(λ...);
+    d = gcd(λ);
     new(SVector{2}(λ .÷ d), c//d)
   end
 end
@@ -35,10 +35,11 @@ Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
 Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
+Base.show(io::IO, e::Edge) = print(io, "⟨$(e.λ),⋅⟩ + $(e.c) ≥ 0")
 
 (e::Edge)(p::AbstractVector{<:Real}) = p'*e.λ + e.c
 
-withbigint(e::Edge) = Edge(big.(e.λ), big(e.c))
+Base.big(e::Edge) = Edge(big.(e.λ), big(e.c))
 
 
 """
@@ -53,13 +54,14 @@ e1::Edge ∩ e2::Edge = intersect(e1,e2)
 
 
 struct Polygon
-  edges::Vector{Edge}
-  vertices::CircularVector{<:SVector{2,<:Rational}}
+  edges::CircularVector{Edge}
+  vertices::CircularVector{<:Union{SVector{2,<:Rational}, Nothing}}
 end
+#Polygon(edges::AbstractVector{Edge}, vertices::AbstractVector{<:Union{SVector{2,<:Rational}, Nothing}}) = Polygon(CircularVector(edges), CircularVector(vertices))
 
-withbigint(Δ::Polygon) = Polygon(withbigint.(Δ.edges), map(v->big.(v), Δ.vertices))
+Base.big(Δ::Polygon) = Polygon(big.(Δ.edges), map(v->big.(v), Δ.vertices))
 
-function drop_colinear!(vertices::Vector{<:SVector{2,<:Rational}})
+function drop_colinear!(vertices::AbstractVector{<:SVector{2,<:Rational}})
   vertices = CircularVector(vertices)
   tobedeleted = []
   for i in eachindex(vertices)
@@ -80,12 +82,57 @@ function Polygon(vertices::SVector{2,<:Real}...)
   for i in eachindex(vertices)
     push!(edges, Edge(vertices[i], vertices[i + 1]))
   end
+  Polygon(CircularVector(edges), vertices)
+end
+Polygon(vertices::AbstractVector{<:Real}...) = Polygon((SVector{2,Rational}(rationalize.(v)) for v in vertices)...)
+
+function Polygon(edges::Edge...)
+  edges = sort!(collect(edges),by=e->(atan(e.λ[2],e.λ[1]), e.c))
+  edges = unique!(e->e.λ, edges) |> CircularVector
+  while true
+    vertices = CircularVector(Vector{Union{Nothing, SVector{2,Rational}}}(nothing, length(edges)))
+    vertices[0] = first(edges[-1] ∩ edges[0])
+    tobedeleted = Int[]
+    for i in eachindex(edges)
+      vertices[i] = first(edges[i-1] ∩ edges[i])
+      if det([(vertices[i]-vertices[i-1])' ; edges[i-1].λ']) < 0
+        push!(tobedeleted, i-1)
+      end
+    end
+    if isempty(tobedeleted)
+      return Polygon(edges, vertices)
+    end
+    deleteat!(edges, tobedeleted)
+  end
+end
+
+function Base.:*(M::AbstractMatrix{<:Rational}, Δ::Polygon)
+  vertices = map(v->SVector{2}(M*v), Δ.vertices)
+  edges = map(e->Edge(M'^-1 * e.λ, e.c), Δ.edges)
+  if det(M) < 0
+    reverse!(vertices)
+    reverse!(edges)
+  end
   Polygon(edges, vertices)
 end
-Polygon(vertices::Vector{<:Real}...) = Polygon((SVector{2,Rational}(rationalize.(v)) for v in vertices)...)
+Base.:+(u::AbstractVector{<:Rational}, Δ::Polygon) = Polygon(map(e->Edge(e.λ, e.c - e.λ · u), Δ.edges),map(v->u + v, Δ.vertices))
 
-Base.:*(M::AbstractMatrix{<:Real}, Δ::Polygon) = Polygon( ([M * v for v in (det(M) > 0 ? Δ.vertices : reverse(Δ.vertices))])...)
-Base.:+(u::AbstractVector{<:Real}, Δ::Polygon) = Polygon([u + v for v in Δ.vertices]...)
+(Δ::Polygon)(p::AbstractVector{<:Real}) = minimum(e->e(p), Δ.edges)
+
+
+get_affine_edge_length(Δ::Polygon, i::Int) = gcd(Δ.vertices[i+1] - Δ.vertices[i])
+
+function Base.show(io::IO, Δ::Polygon)
+  for i in eachindex(Δ.vertices)
+    w = [0 -1;1 0] * (Δ.edges[i-1].λ-Δ.edges[i].λ)
+    k = gcd(w)
+    area = det([Δ.edges[i-1].λ' ; Δ.edges[i].λ'])
+    println(io::IO, "$(sprint(show, Δ.vertices[i])); [q,p] = $(w .÷ k); k = $k; area = $area")
+  end
+  for i in eachindex(Δ.edges)
+    println(io::IO, "$(sprint(show,Δ.edges[i])); Length: $(get_affine_edge_length(Δ,i))")
+  end
+end
 
 """
   `intersect(e::Edge, Δ::Polygon)`
@@ -110,11 +157,11 @@ function intersect(e::Edge, Δ::Polygon)
 end
 
 """
-  `refine(Δ::Polygon, e::Edge)`
+  `refine!(Δ::Polygon, e::Edge)`
 
 Get vector of vertices of `Δ` with added vertices for intersections with `e`
 """
-function refine(Δ::Polygon, halfspaces::Edge...)
+function refine!(Δ::Polygon, halfspaces::Edge...)
   intersections = []
   for e in halfspaces
     for (i,e1) in enumerate(Δ.edges)
@@ -128,12 +175,12 @@ function refine(Δ::Polygon, halfspaces::Edge...)
       end
     end
   end
-  vertices = copy(Δ.vertices)
   sort!(intersections, by=i->(i[3],i[4]), rev=true)
   for int in intersections
-    insert!(vertices.data, int[3] + 1, int[1])
+    insert!(Δ.vertices.data, int[3] + 1, int[1])
+    insert!(Δ.edges.data, int[3] + 1, Δ.edges[int[3]])
   end
-  vertices
+  Δ
 end
 
 """
@@ -142,7 +189,7 @@ end
 Get Polygon of intersection of `Δ` with `halfspaces`
 """
 function slice(Δ::Polygon, halfspaces::Edge...)
-  vertices = refine(Δ, halfspaces...)
+  vertices = refine!(deepcopy(Δ), halfspaces...).vertices
   tobedeleted = Int[]
   for (i,v) in enumerate(vertices)
     for e in halfspaces
@@ -155,22 +202,18 @@ function slice(Δ::Polygon, halfspaces::Edge...)
   Polygon(deleteat!(vertices, tobedeleted)...)
 end
 
-get_affine_length(v::AbstractVector) = gcd(rationalize.(v)...)
-
-get_affine_edge_length(Δ::Polygon, i::Int) = get_affine_length(Δ.vertices[i+1] - Δ.vertices[i])
-
 """
 Get some possible probe direction from `e`
 """
 get_default_probe(e::Edge) = collect(gcdx(e.λ...)[2:3])
 
 """
-  `get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})`
+  `get_probe_intervall(e::AbstractVector{Edge}, probe::Vector{<:Integer})`
 
 Get range of `k` for which `probe + k*[0 -1; 1 0]*e[2].λ` is a reasonable probe in the tripple of edges `e[1]`, `e[2]` ,`e[3]`.
 
 """
-function get_probe_intervall(e::Vector{Edge}, probe::Vector{<:Integer})
+function get_probe_intervall(e::AbstractVector{Edge}, probe::Vector{<:Integer})
   v = [0 -1; 1 0] * e[2].λ
   a = - (probe' * e[1].λ) / (v' * e[1].λ)
   b = - (probe' * e[3].λ) / (v' * e[3].λ)
@@ -183,16 +226,7 @@ end
 
 Get range of `k` for which `probe + k*[0 -1; 1 0]*Δ.edges[i].λ` is a reasonable probe in the polygon Δ.
 """
-function get_probe_intervall(Δ::Polygon, i::Integer, probe::Vector{<:Integer})
-  if 1<i<length(Δ.edges)
-    e = Δ.edges[i-1:i+1]
-  elseif i == 1
-    e = Δ.edges[[end,1,2]]
-  else
-    e = Δ.edges[[i-1,i,1]]
-  end
-  get_probe_intervall(e, probe)
-end
+get_probe_intervall(Δ::Polygon, i::Integer, probe::Vector{<:Integer}) = get_probe_intervall(Δ.edges[i-1:i+1], probe)
 
 """
   `get_probe_range(Δ::Polygon, edge_index::Integer, probe::Vector{<:Integer})`
@@ -247,7 +281,7 @@ function get_branch_cut_line(e1::Edge, e2::Edge)
   if orientation == -1
     e1,e2 = e2,e1
   end
-  λ = e2.λ - e1.λ; kdist = gcd(λ...); λ = λ .÷ kdist;
+  λ = e2.λ - e1.λ; kdist = gcd(λ); λ = λ .÷ kdist;
   dist = - λ[1]*e1.λ[2] + λ[2]*e1.λ[1]
   if kdist % dist != 0
     @warn "I don't think this is a potential almost toric corner"
@@ -270,7 +304,7 @@ Get a polygon obtained by appling a shear matrix `M` corresponding to `branch_cu
 """
 function mutate(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
   # 1. Insert missing vertices at intersections of branch_cut_line with polygon:
-  vertices = refine(Δ, branch_cut_line[1])
+  vertices = refine!(deepcopy(Δ), branch_cut_line[1]).vertices
   offset = - branch_cut_line[1].λ * branch_cut_line[1].c//sum(t->t^2, branch_cut_line[1].λ)
 
   # 2. Apply mutation
@@ -311,24 +345,29 @@ end
 # Enable Makie to plot Polygon
 Makie.convert_arguments(P::PointBased, Δ::Polygon) = (decompose(Point2f, Point2f.(Δ.vertices)),)
 
-function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
+function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), show_probe_ranges = true)
   fig = Figure()
   ax = Axis(fig[1,1], autolimitaspect = 1.0)
 
   Δ = Observable(Δ)
-  probe_ranges = Observable(get_probe_ranges(Δ[]))
-  probe_range_colors = @lift(Integer[i for (i,edge_ranges) in enumerate($probe_ranges) for _ in edge_ranges])
-  flat_probe_ranges = @lift begin
-    [Point.(Δ.vertices.data) for Δ in Iterators.flatten($probe_ranges)]
+  on(Δ) do Δ
+    println(Δ)
   end
+  if show_probe_ranges
+    probe_ranges = Observable(get_probe_ranges(Δ[]))
+    probe_range_colors = @lift(Integer[i for (i,edge_ranges) in enumerate($probe_ranges) for _ in edge_ranges])
+    flat_probe_ranges = @lift begin
+      [Point.(Δ.vertices.data) for Δ in Iterators.flatten($probe_ranges)]
+    end
 
-  probe_ranges_plot = poly!(flat_probe_ranges,
-                            color=probe_range_colors,
-                            colormap=(:rainbow,0.1),
-                            strokewidth=0.1,
-                            strokecolor=:black,
-                            inspectable=false
-                           )
+    probe_ranges_plot = poly!(flat_probe_ranges,
+                              color=probe_range_colors,
+                              colormap=(:rainbow,0.1),
+                              strokewidth=0.1,
+                              strokecolor=:black,
+                              inspectable=false
+                             )
+  end
   Δ_plt = poly!(Δ,
                 color=(:black,0),
                 strokecolor=(:black,1),
@@ -354,13 +393,15 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
       plt, idx = pick(fig)
       if plt == vertex_buttons
         k = Keyboard.left_shift in events(fig).keyboardstate ? -1 : 1
-        for edge_range in probe_ranges[]
-          for i in eachindex(edge_range)
-            edge_range[i] = mutate_with(edge_range[i], Δ[], idx, k)
+        if show_probe_ranges
+          for edge_range in probe_ranges[]
+            for i in eachindex(edge_range)
+              edge_range[i] = mutate_with(edge_range[i], Δ[], idx, k)
+            end
           end
         end
         Δ[] = mutate(Δ[], idx, k)
-        notify(probe_ranges)
+        show_probe_ranges && notify(probe_ranges)
       end
     end
   end
@@ -378,38 +419,46 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1))
   on(events(fig).keyboardbutton) do event
     if event.action == Keyboard.press
       if event.key == Keyboard.right
-        M = [1 1;0 1]
-        for edge_range in probe_ranges[]
-          for i in eachindex(edge_range)
-            edge_range[i] = M*edge_range[i]
-          end
-        end; notify(probe_ranges)
+        M = [1 1;0 1//1]
+        if show_probe_ranges
+          for edge_range in probe_ranges[]
+            for i in eachindex(edge_range)
+              edge_range[i] = M*edge_range[i]
+            end
+          end; notify(probe_ranges)
+        end
         Δ[] = M * Δ[]
       elseif event.key == Keyboard.left
-        M = [1 -1;0 1]
-        for edge_range in probe_ranges[]
-          for i in eachindex(edge_range)
-            edge_range[i] = M*edge_range[i]
-          end
-        end; notify(probe_ranges)
+        M = [1 -1;0 1//1]
+        if show_probe_ranges
+          for edge_range in probe_ranges[]
+            for i in eachindex(edge_range)
+              edge_range[i] = M*edge_range[i]
+            end
+          end; notify(probe_ranges)
+        end
         Δ[] = M * Δ[]
       elseif event.key == Keyboard.up
-        M = [1 0;1 1]
-        for edge_range in probe_ranges[]
-          for i in eachindex(edge_range)
-            edge_range[i] = M*edge_range[i]
-          end
-        end; notify(probe_ranges)
+        M = [1 0;1 1//1]
+        if show_probe_ranges
+          for edge_range in probe_ranges[]
+            for i in eachindex(edge_range)
+              edge_range[i] = M*edge_range[i]
+            end
+          end; notify(probe_ranges)
+        end
         Δ[] = M * Δ[]
       elseif event.key == Keyboard.down
-        M = [1 0;-1 1]
-        for edge_range in probe_ranges[]
-          for i in eachindex(edge_range)
-            edge_range[i] = M*edge_range[i]
-          end
-        end; notify(probe_ranges)
+        M = [1 0;-1 1//1]
+        if show_probe_ranges
+          for edge_range in probe_ranges[]
+            for i in eachindex(edge_range)
+              edge_range[i] = M*edge_range[i]
+            end
+          end; notify(probe_ranges)
+        end
         Δ[] = M * Δ[]
-      elseif event.key == Keyboard.p
+      elseif event.key == Keyboard.p && show_probe_ranges
         probe_ranges[] = get_probe_ranges(Δ[])
       end
     end
