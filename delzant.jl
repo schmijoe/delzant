@@ -13,13 +13,9 @@ struct Edge
 
   Construct edge/halfspace satisfying equation `λ'*x + c >= 0`.
   """
-  function Edge(λ::AbstractVector{<:Real}, c::T) where T<:Real
-    λ = rationalize.(λ); c = rationalize(c)
-    if λ[1] == λ[2] == 0
-      @error "Normal Vector must be non-zero" λ
-    end
-    d = gcd(λ);
-    new(SVector{2}(λ .÷ d), c//d)
+  function Edge(λ::AbstractVector{<:Integer}, c::T) where T<:Real
+    c = rationalize(c)
+    new(SVector{2}(λ), c)
   end
 end
 """
@@ -29,13 +25,21 @@ Consturct edge/hafspace containing points `p1` and `p2`.
 """
 function Edge(p1::AbstractVector{<:Real}, p2::AbstractVector{<:Real})
   λ = [0 -1; 1 0] * (p2-p1)
-  Edge(λ, -λ'*p1)
+  d = gcd(λ)
+  Edge(λ .÷ d, -λ'*p1//d)
+end
+function Edge(λ::AbstractVector{<:Rational}, c::Real)
+  d = gcd(λ)
+  Edge(λ .÷ d, rationalize(c)//d)
 end
 Base.hash(e::Edge, h::UInt) = hash((e.λ,e.c),h)
 Base.isequal(e1::Edge,e2::Edge) = (e1.λ == e2.λ && e1.c == e2.c)
 Base.:(==)(e1::Edge,e2::Edge) = Base.isequal(e1,e2)
 Base.:(-)(e::Edge) = Edge(-e.λ,-e.c)
-Base.:*(M::AbstractMatrix{<:Rational}, e::Edge) = Edge(M'^-1 * e.λ, e.c)
+Base.:*(M::AbstractMatrix{<:Integer}, e::Edge) = Edge(Rational.(M)'^-1 * e.λ, e.c)
+Base.:*(M::AbstractMatrix{<:Rational}, e::Edge) = Edge((M'^-1) * e.λ, e.c)
+Base.:+(e1::Edge, e2::Edge) = Edge(e1.λ + e2.λ, e1.c + e2.c)
+Base.:-(e1::Edge, e2::Edge) = e1 + (-e2)
 Base.:+(u::AbstractVector{<:Rational}, e::Edge) = Edge(e.λ, e.c - e.λ · u)
 Base.:+(o::Rational, e::Edge) = Edge(e.λ, e.c + o)
 Base.show(io::IO, e::Edge) = print(io, "⟨$(e.λ),⋅⟩ + $(e.c) ≥ 0")
@@ -51,7 +55,7 @@ Intersection of `e1`, `e2` with orientation.
 """
 function intersect(e1::Edge, e2::Edge)
   A = [e1.λ'//1; e2.λ'//1]; detA = det(A);
-  (detA == 0 ? nothing : -A^-1*[e1.c; e2.c], sign(detA))
+  (detA == 0 ? nothing : -A^-1*[e1.c; e2.c], detA)
 end
 e1::Edge ∩ e2::Edge = intersect(e1,e2)
 
@@ -94,12 +98,18 @@ function Polygon(edges::Edge...)
   edges = unique!(e->e.λ, edges) |> CircularVector
   while !isempty(edges)
     vertices = CircularVector(Vector{Union{Nothing, SVector{2,Rational}}}(nothing, length(edges)))
-    vertices[0] = first(edges[-1] ∩ edges[0])
+    v, orientation = edges[-1] ∩ edges[0]
+    if orientation > 0
+      vertices[0] = v
+    end
     tobedeleted = Int[]
     for i in eachindex(edges)
-      vertices[i] = first(edges[i-1] ∩ edges[i])
-      n1 = vertices[i-1] === nothing
-      n2 = vertices[i] === nothing
+      v, orientation = edges[i-1] ∩ edges[i]
+      if orientation > 0
+        vertices[i] = v
+      end
+      n1 = isnothing(vertices[i-1])
+      n2 = isnothing(vertices[i])
       if (n1 && n2) || (!(n1 || n2) && det([(vertices[i]-vertices[i-1])' ; edges[i-1].λ']) < 0)
         push!(tobedeleted, i-1)
       end
@@ -112,7 +122,7 @@ function Polygon(edges::Edge...)
   return Polygon(CircularVector(Edge[]), CircularVector(SVector{2,Rational}[]))
 end
 
-function Base.:*(M::AbstractMatrix{<:Rational}, Δ::Polygon)
+function Base.:*(M::AbstractMatrix, Δ::Polygon)
   vertices = map(v->SVector{2}(M*v), Δ.vertices)
   edges = map(e->M*e, Δ.edges)
   if det(M) < 0
@@ -128,14 +138,24 @@ Base.isempty(Δ::Polygon) = isempty(Δ.edges)
 (Δ::Polygon)(p::AbstractVector{<:Real}) = minimum(e->e(p), Δ.edges)
 
 
-get_affine_edge_length(Δ::Polygon, i::Int) = gcd(Δ.vertices[i+1] - Δ.vertices[i])
+function get_affine_edge_length(Δ::Polygon, i::Int)
+  if isnothing(Δ.vertices[i+1]) || isnothing(Δ.vertices[i])
+    return 1//0
+  end
+  gcd(Δ.vertices[i+1] - Δ.vertices[i])
+end
 
 function Base.show(io::IO, Δ::Polygon)
   for i in eachindex(Δ.vertices)
-    w = Rational[0 -1;1 0] * (Δ.edges[i-1].λ-Δ.edges[i].λ)
-    k = gcd(w)
+    w = Δ.edges[i-1].λ-Δ.edges[i].λ
+    k = gcd(w) ; w = w .// k
+    p = det([w'; Δ.edges[i-1].λ']) ÷ 1
+    k = k ÷ p
+    e_perp = [0 -1//1; 1 0] *collect(gcdx(Δ.edges[i-1].λ...)[2:3])
+    q = (det([e_perp' ; w']) % p ) ÷ 1
+
     area = det([Δ.edges[i-1].λ' ; Δ.edges[i].λ'])
-    println(io::IO, "$(sprint(show, Δ.vertices[i])); [q,p] = $(w .÷ k); k = $k; area = $area")
+    println(io::IO, "$(sprint(show, Δ.vertices[i])); [p,q] = [$p,$q]; k = $k; area = $area")
   end
   for i in eachindex(Δ.edges)
     println(io::IO, "$(sprint(show,Δ.edges[i])); Length: $(get_affine_edge_length(Δ,i))")
@@ -162,6 +182,78 @@ function intersect(e::Edge, Δ::Polygon)
   unique!(i->i[1], intersections)
   sort!(intersections, by=i->i[2])
   first.(intersections)
+end
+
+function to_linesegments(Δ::Polygon, ray_length = 1)
+  ls = Point2f[]
+  for i in eachindex(Δ.edges)
+    e = Δ.edges[i]
+    v0 = Δ.vertices[i]; v1 = Δ.vertices[i+1]
+    if ray_length > 0
+      if isnothing(v0) && isnothing(v1)
+        d = [0 1;-1 0//1]*e.λ
+        v,_ = intersect(e,Edge(d,0))
+        v0 = v - d*ray_length/2
+        v1 = v + d*ray_length/2
+      elseif isnothing(v0)
+        d = [0 1;-1 0//1]*e.λ
+        v0 = v1 - d*ray_length
+      elseif isnothing(v1)
+        d = [0 1;-1 0//1]*e.λ
+        v1 = v0 + d*ray_length
+      end
+    end
+    if !isnothing(v0) && !isnothing(v1)
+      push!(ls,v0,v1)
+    end
+  end
+  ls
+end
+
+function toric_curve(edges::AbstractVector{Edge}, ray_length = 1)
+  l = length(edges)
+  ls = Point2f[]
+  for i in 1:l
+    for j in (i+1):l
+      v0 = (nothing, -1//0); v1 = (nothing, 1//0)
+      e0 = edges[j]-edges[i]
+      ev = Edge([0 1;-1 0]*e0.λ, 0)
+      for k in Iterators.flatten((1:(i-1),(i+1):(j-1),(j+1):l))
+        e1 = edges[k]-edges[j]
+        v, orientation = e0 ∩ e1
+        val = isnothing(v) ? nothing : ev(v)
+        if orientation == 0
+          a = e0.λ[1] != 0 ? e1.λ[1]//e0.λ[1] : e1.λ[2]//e0.λ[2]
+          if edges[k].c - edges[j].c - a*e0.c < 0
+            v0 = (nothing, 1//0); v1 = (nothing, -1//0)
+            break
+          end
+        elseif orientation > 0 && val < v1[2]
+          v1 = (v,val)
+        elseif orientation < 0 && val > v0[2]
+          v0 = (v,val)
+        end
+      end
+      if v0[2] < v1[2]
+        v0 = v0[1]; v1 = v1[1]
+        if ray_length > 0
+          if isnothing(v0) && isnothing(v1)
+            v,_ = intersect(e0,Edge(ev.λ,0))
+            v0 = v - ev.λ*ray_length/2
+            v1 = v + ev.λ*ray_length/2
+          elseif isnothing(v0)
+            v0 = v1 - ev.λ*ray_length
+          elseif isnothing(v1)
+            v1 = v0 + ev.λ*ray_length
+          end
+        end
+        if !isnothing(v0) && !isnothing(v1)
+          push!(ls,v0,v1)
+        end
+      end
+    end
+  end
+  ls
 end
 
 """
@@ -286,7 +378,7 @@ function get_branch_cut_line(e1::Edge, e2::Edge)
   if isnothing(v)
     return (nothing, nothing)
   end
-  if orientation == -1
+  if orientation < -1
     e1,e2 = e2,e1
   end
   λ = e2.λ - e1.λ; kdist = gcd(λ); λ = λ .÷ kdist;
@@ -316,7 +408,7 @@ function mutate!(Δ::Polygon, branch_cut_line::Tuple{Edge, <:Integer})
 
   # 2. Apply mutation
   p,q = [0 1;-1 0]*branch_cut_line[1].λ; k=branch_cut_line[2]
-  M = Rational[1+k*p*q -k*p^2; k*q^2 1-k*p*q]
+  M = [1+k*p*q -k*p^2; k*q^2 1-k*p*q]
   l1 = l2 = branch_cut_line[1](Δ.vertices[1])
   for i in eachindex(Δ.vertices)
     l1 = l2
@@ -373,7 +465,12 @@ function draw(Δ::Polygon;
   draw_contours = true,
   contour_width = 0.2,
   contour_density::Rational = 1//5,
-  contour_color = (:black, 1)
+  contour_color = (:black, 1),
+  ray_length = 1,
+  draw_toric = false,
+  toric_color = (:blue, 1),
+  toric_width = 0.5,
+  toric_ray_length = 5
   )
   if fig === nothing
     fig = Figure()
@@ -382,6 +479,8 @@ function draw(Δ::Polygon;
     ax = Axis(fig[1,1], autolimitaspect = 1.0)
   end
   current_axis!(ax)
+  hidespines!(ax)
+  hidedecorations!(ax)
 
   if draw_contours
     for inset in 0:contour_density:10
@@ -389,22 +488,26 @@ function draw(Δ::Polygon;
       if isempty(cont)
         break
       end
-      poly!(Point2f.(cont.vertices.data),
-            color=(:black,0),
-            strokecolor=contour_color,
-            strokewidth=contour_width)
+      linesegments!(to_linesegments(cont, ray_length-inset),
+                    color=contour_color,
+                    linewidth=contour_width)
     end
   end
 
-  poly!(Point2f.(Δ.vertices.data),
-        color=(:black, 0),
-        strokecolor=outline_color,
-        strokewidth=outline_width)
+  if draw_toric
+    linesegments!(toric_curve(Δ.edges, toric_ray_length),
+                  color=toric_color,
+                  linewidth=toric_width)
+  end
 
-  return fig,ax
+  linesegments!(to_linesegments(Δ, ray_length),
+                color=outline_color,
+                linewidth=outline_width)
+
+  return fig
 end
 
-function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), show_probe_ranges = true)
+function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), show_probe_ranges = false)
   fig = Figure()
   ax = Axis(fig[1,1], autolimitaspect = 1.0)
 
@@ -442,7 +545,7 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), s
   bcl_line = Observable(Point2[])
   linesegments!(bcl_line,
                 color=:black,
-                linestyle=[0,5,10],
+                linestyle=Linestyle([0,5,10]),
                 linewidth=1.0,
                 overdraw=true
                )
@@ -527,7 +630,7 @@ function interact(Δ::Polygon; button_size = 30, button_color = (:black, 0.1), s
 end
 
 CP2 = Polygon([-1,-1],[2,-1],[-1,2]);
-CP2_1 = Polygon([-1,0],[0,-1],[2,-1],[-1,2]);
+CP2_1 = Polygon([-1,0.2],[0.2,-1],[2,-1],[-1,2]);
 CP2_2 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[-1,2]);
 CP2_3 = Polygon([-1,0],[0,-1],[1,-1],[1,0],[0,1],[-1,1]);
 Δ1 = Polygon([0,0],[26,0],[26,1],[22,9],[21,10],[20,10]);
