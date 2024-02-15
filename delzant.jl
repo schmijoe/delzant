@@ -154,7 +154,7 @@ function Base.show(io::IO, Δ::Polygon)
     e_perp = [0 -1//1; 1 0] *collect(gcdx(Δ.edges[i-1].λ...)[2:3])
     q = (det([e_perp' ; w']) % p ) ÷ 1
 
-    area = det([Δ.edges[i-1].λ' ; Δ.edges[i].λ'])
+    area = det(Rational.([Δ.edges[i-1].λ' ; Δ.edges[i].λ']))
     println(io::IO, "$(sprint(show, Δ.vertices[i])); [p,q] = [$p,$q]; k = $k; area = $area")
   end
   for i in eachindex(Δ.edges)
