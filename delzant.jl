@@ -210,7 +210,7 @@ function to_linesegments(Δ::Polygon, ray_length = 1)
   ls
 end
 
-function toric_curve(edges::AbstractVector{Edge}, ray_length = 1)
+function tropical_curve(edges::AbstractVector{Edge}, ray_length = 1)
   l = length(edges)
   ls = Point2f[]
   for i in 1:l
@@ -467,10 +467,10 @@ function draw(Δ::Polygon;
   contour_density::Rational = 1//5,
   contour_color = (:black, 1),
   ray_length = 1,
-  draw_toric = false,
-  toric_color = (:blue, 1),
-  toric_width = 0.5,
-  toric_ray_length = 5
+  draw_tropical = false,
+  tropical_color = (:blue, 1),
+  tropical_width = 0.5,
+  tropical_ray_length = 5
   )
   if fig === nothing
     fig = Figure()
@@ -494,10 +494,10 @@ function draw(Δ::Polygon;
     end
   end
 
-  if draw_toric
-    linesegments!(toric_curve(Δ.edges, toric_ray_length),
-                  color=toric_color,
-                  linewidth=toric_width)
+  if draw_tropical
+    linesegments!(tropical_curve(Δ.edges, tropical_ray_length),
+                  color=tropical_color,
+                  linewidth=tropical_width)
   end
 
   linesegments!(to_linesegments(Δ, ray_length),

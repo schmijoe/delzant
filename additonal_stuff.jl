@@ -29,6 +29,7 @@ function farey!(a::Vector)
   a
 end
 
+#=
 function markov_extended_helper(p_1, q_1, p_2)
   p_3 = (3*p_1*p_2 + isqrt(9*p_1^2*p_2^2 - 4(p_1^2+p_2^2))) ÷ 2
   q_2 = (p_2 * q_1 -3p_3) ÷ p_1
@@ -47,5 +48,16 @@ function markov_extended(l,m,r)
   right = markov_extended_helper(m[1],m[2],r[1])
   rn = (m,[right[2],right[3]],r)
   return (ln,rn)
+end
+=#
+
+
+function neg_shear(v)
+  -Rational[1-v[1]*v[2] v[1]^2;-v[2]^2 1+v[1]*v[2]]
+end
+
+function markov_extended(t)
+  [[t[1], neg_shear(t[2])^(-1)*t[3], t[2]],
+   [t[2], neg_shear(t[2])     *t[1], t[3]]]
 end
 
